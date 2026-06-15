@@ -8,8 +8,20 @@ namespace WhatsAppBackup.Services;
 
 public interface IOpenClawClient
 {
+    Task<GatewayStatus> GetStatusAsync(CancellationToken cancellationToken = default);
     Task<IEnumerable<ChatData>> GetChatsAsync(CancellationToken cancellationToken = default);
     Task<IEnumerable<MessageData>> GetMessagesAsync(string jid, DateTime? since = null, CancellationToken cancellationToken = default);
+}
+
+public class GatewayStatus
+{
+    public bool IsGatewayReachable { get; set; }
+    public bool IsWhatsAppConnected { get; set; }
+    public string? Phone { get; set; }
+    public string? DisplayName { get; set; }
+    public string? State { get; set; }
+    public string? QrCode { get; set; }
+    public string? Error { get; set; }
 }
 
 public class ChatData
@@ -73,6 +85,47 @@ public class OpenClawClient : IOpenClawClient
             _httpClient.DefaultRequestHeaders.Authorization = 
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _settings.GatewayToken);
         }
+    }
+
+    public async Task<GatewayStatus> GetStatusAsync(CancellationToken cancellationToken = default)
+    {
+        var status = new GatewayStatus();
+        try
+        {
+            var response = await _httpClient.GetAsync("/api/whatsapp/status", cancellationToken);
+            status.IsGatewayReachable = true;
+
+            if (response.IsSuccessStatusCode)
+            {
+                var payload = await response.Content.ReadFromJsonAsync<JsonElement>(
+                    cancellationToken: cancellationToken);
+
+                status.State = payload.TryGetProperty("state", out var state) ? state.GetString() : null;
+                status.Phone = payload.TryGetProperty("phone", out var phone) ? phone.GetString() : null;
+                status.DisplayName = payload.TryGetProperty("name", out var name) ? name.GetString() : null;
+                status.QrCode = payload.TryGetProperty("qrCode", out var qr) ? qr.GetString() : null;
+
+                var connected = payload.TryGetProperty("connected", out var conn) && conn.GetBoolean();
+                var stateStr = status.State?.ToUpperInvariant();
+                status.IsWhatsAppConnected = connected || stateStr == "CONNECTED" || stateStr == "OPEN";
+            }
+            else
+            {
+                status.Error = $"Gateway returned {(int)response.StatusCode} {response.ReasonPhrase}";
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            status.IsGatewayReachable = false;
+            status.Error = ex.Message;
+        }
+        catch (TaskCanceledException)
+        {
+            status.IsGatewayReachable = false;
+            status.Error = "Connection timed out";
+        }
+
+        return status;
     }
 
     public async Task<IEnumerable<ChatData>> GetChatsAsync(CancellationToken cancellationToken = default)

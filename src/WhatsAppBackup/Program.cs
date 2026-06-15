@@ -37,6 +37,7 @@ try
     // Services
     builder.Services.AddScoped<IBackupService, BackupService>();
     builder.Services.AddScoped<IBackupCommands, BackupCommands>();
+    builder.Services.AddScoped<IConnectCommands, ConnectCommands>();
 
     // Check for command-line mode
     if (args.Length > 0)
@@ -45,9 +46,11 @@ try
         
         using var scope = host.Services.CreateScope();
         var commands = scope.ServiceProvider.GetRequiredService<IBackupCommands>();
+        var connect = scope.ServiceProvider.GetRequiredService<IConnectCommands>();
 
         return args[0].ToLowerInvariant() switch
         {
+            "connect" or "--connect" or "-c" => await connect.CheckConnectionAsync(),
             "backup" or "--backup" or "-b" => await commands.RunFullBackupAsync(),
             "incremental" or "--incremental" or "-i" => await commands.RunIncrementalBackupAsync(),
             "migrate" or "--migrate" =>
@@ -118,13 +121,15 @@ static int ShowHelp()
         
         Commands:
           (none)        Run as a scheduled service (daemon mode)
+          connect       Check gateway and WhatsApp connection status
           backup        Run a full backup now
           incremental   Run an incremental backup now
           migrate       Run database migrations only
           help          Show this help message
-        
+
         Examples:
           WhatsAppBackup                  # Start daemon with scheduled backups
+          WhatsAppBackup connect          # Check connection status
           WhatsAppBackup backup           # Run full backup manually
           WhatsAppBackup incremental      # Run incremental backup manually
         
