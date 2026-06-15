@@ -68,7 +68,7 @@ public class BackupService : IBackupService
                 result.ChatsProcessed++;
 
                 // Get messages for this chat
-                var messages = await _openClawClient.GetMessagesAsync(chatData.Jid, cancellationToken);
+                var messages = await _openClawClient.GetMessagesAsync(chatData.Jid, cancellationToken: cancellationToken);
                 
                 foreach (var msgData in messages)
                 {
