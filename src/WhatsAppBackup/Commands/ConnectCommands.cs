@@ -54,6 +54,8 @@ public class ConnectCommands : IConnectCommands
         if (status.IsWhatsAppConnected)
         {
             PrintConnected(status);
+            Console.WriteLine();
+            await WaitForHistorySyncAsync();
             return 0;
         }
 
@@ -184,25 +186,41 @@ public class ConnectCommands : IConnectCommands
 
     private async Task WaitForHistorySyncAsync()
     {
+        // Quick check — already complete?
+        using var quickCheck = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        SyncStatus initial;
+        try { initial = await _openClawClient.GetSyncStatusAsync(quickCheck.Token); }
+        catch { initial = new SyncStatus(); }
+
+        if (initial.SyncComplete && initial.ChatsCount > 0)
+        {
+            Console.WriteLine($"✅ History ready — {initial.ChatsCount} chats, {initial.MessagesCount} messages");
+            Console.WriteLine("   Run 'backup' to store everything to PostgreSQL.");
+            return;
+        }
+
         Console.WriteLine("Waiting for WhatsApp history sync...");
-        Console.WriteLine("(This may take several minutes for large accounts)");
+        Console.WriteLine("(This may take several minutes for large accounts — Ctrl+C to exit and check later)");
         Console.WriteLine();
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         int lastChats = -1, lastMessages = -1;
+        var noProgressSince = sw.Elapsed;
 
-        while (stopwatch.Elapsed.TotalMinutes < 15)
+        while (sw.Elapsed.TotalMinutes < 15)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             SyncStatus sync;
             try { sync = await _openClawClient.GetSyncStatusAsync(cts.Token); }
             catch { sync = new SyncStatus(); }
 
-            if (sync.ChatsCount != lastChats || sync.MessagesCount != lastMessages)
+            bool changed = sync.ChatsCount != lastChats || sync.MessagesCount != lastMessages;
+            if (changed)
             {
+                noProgressSince = sw.Elapsed;
                 lastChats = sync.ChatsCount;
                 lastMessages = sync.MessagesCount;
-                Console.WriteLine($"   Syncing...  Chats: {sync.ChatsCount,5}   Messages: {sync.MessagesCount,7}   ({stopwatch.Elapsed:mm\\:ss} elapsed)");
+                Console.WriteLine($"   Syncing  Chats: {sync.ChatsCount,5}   Messages: {sync.MessagesCount,7}   ({sw.Elapsed:mm\\:ss})");
             }
 
             if (sync.SyncComplete)
@@ -213,11 +231,23 @@ public class ConnectCommands : IConnectCommands
                 return;
             }
 
+            // If no chats after 3 minutes with no progress, the session may be stale
+            var stuck = sw.Elapsed - noProgressSince;
+            if (sync.ChatsCount == 0 && stuck.TotalMinutes >= 3)
+            {
+                Console.WriteLine();
+                Console.WriteLine("⚠️  No chats received after 3 minutes.");
+                Console.WriteLine("   WhatsApp may not resend history for this session.");
+                Console.WriteLine("   Run 'reset' to re-link and force a fresh history sync:");
+                Console.WriteLine("   dotnet run --project src/WhatsAppBackup -- reset");
+                return;
+            }
+
             await Task.Delay(3000);
         }
 
         Console.WriteLine();
-        Console.WriteLine("⚠️  Sync is still in progress. Run 'backup' whenever you're ready.");
+        Console.WriteLine($"⚠️  Sync timeout — {lastChats} chats so far. Run 'backup' when ready.");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

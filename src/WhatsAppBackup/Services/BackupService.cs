@@ -54,6 +54,13 @@ public class BackupService : IBackupService
         {
             _logger.LogInformation("Starting full WhatsApp backup...");
 
+            if (!await EnsureGatewayAsync(cancellationToken))
+            {
+                result.Success = false;
+                result.Error = "Gateway is not reachable and could not be started.";
+                return result;
+            }
+
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<WhatsAppDbContext>();
 
@@ -108,6 +115,13 @@ public class BackupService : IBackupService
     {
         var startTime = DateTime.UtcNow;
         var result = new BackupResult();
+
+        if (!await EnsureGatewayAsync(cancellationToken))
+        {
+            result.Success = false;
+            result.Error = "Gateway is not reachable and could not be started.";
+            return result;
+        }
 
         try
         {
@@ -340,5 +354,54 @@ public class BackupService : IBackupService
             "application/pdf" => ".pdf",
             _ => ""
         };
+    }
+
+    private async Task<bool> EnsureGatewayAsync(CancellationToken cancellationToken)
+    {
+        using var check = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        check.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            var status = await _openClawClient.GetStatusAsync(check.Token);
+            if (status.IsGatewayReachable) return true;
+        }
+        catch { }
+
+        var gatewayDir = GatewayProcess.FindGatewayDirectory();
+        if (gatewayDir is null || !GatewayProcess.IsNodeAvailable())
+        {
+            _logger.LogError("Gateway is not reachable and no bundled gateway found");
+            return false;
+        }
+
+        if (!await GatewayProcess.EnsureDependenciesAsync(gatewayDir))
+        {
+            _logger.LogError("Gateway dependency install failed");
+            return false;
+        }
+
+        var sessionDir = Path.GetFullPath(Path.Combine(_cache.CacheDirectory, "wa-session"));
+        _logger.LogInformation("Starting gateway (session: {Dir})", sessionDir);
+        GatewayProcess.Start(gatewayDir, sessionDir);
+
+        for (int i = 0; i < 20; i++)
+        {
+            await Task.Delay(1000, cancellationToken);
+            using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            probe.CancelAfter(TimeSpan.FromSeconds(2));
+            try
+            {
+                var s = await _openClawClient.GetStatusAsync(probe.Token);
+                if (s.IsGatewayReachable)
+                {
+                    _logger.LogInformation("Gateway ready");
+                    return true;
+                }
+            }
+            catch { }
+        }
+
+        _logger.LogError("Gateway did not respond within 20 s");
+        return false;
     }
 }
