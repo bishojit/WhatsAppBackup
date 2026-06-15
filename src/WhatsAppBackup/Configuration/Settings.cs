@@ -22,4 +22,9 @@ public class BackupSettings
     /// Whether to download and store media files
     /// </summary>
     public bool EnableMediaDownload { get; set; } = true;
+
+    /// <summary>
+    /// Directory for local JSON cache of chats and messages
+    /// </summary>
+    public string CacheDirectory { get; set; } = "./cache";
 }

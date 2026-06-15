@@ -35,6 +35,7 @@ try
     builder.Services.AddHttpClient<IOpenClawClient, OpenClawClient>();
 
     // Services
+    builder.Services.AddSingleton<ILocalCacheService, LocalCacheService>();
     builder.Services.AddScoped<IBackupService, BackupService>();
     builder.Services.AddScoped<IBackupCommands, BackupCommands>();
     builder.Services.AddScoped<IConnectCommands, ConnectCommands>();

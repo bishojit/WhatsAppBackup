@@ -28,17 +28,20 @@ public class BackupService : IBackupService
     private readonly ILogger<BackupService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOpenClawClient _openClawClient;
+    private readonly ILocalCacheService _cache;
     private readonly BackupSettings _settings;
 
     public BackupService(
         ILogger<BackupService> logger,
         IServiceScopeFactory scopeFactory,
         IOpenClawClient openClawClient,
+        ILocalCacheService cache,
         IOptions<BackupSettings> settings)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
         _openClawClient = openClawClient;
+        _cache = cache;
         _settings = settings.Value;
     }
 
@@ -59,18 +62,22 @@ public class BackupService : IBackupService
 
             // Get all chats from OpenClaw
             var chats = await _openClawClient.GetChatsAsync(cancellationToken);
-            
-            foreach (var chatData in chats)
+            var chatList = chats.ToList();
+            var cacheMessages = new Dictionary<string, List<MessageData>>();
+
+            foreach (var chatData in chatList)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                
+
                 var chat = await ProcessChatAsync(db, chatData, cancellationToken);
                 result.ChatsProcessed++;
 
                 // Get messages for this chat
                 var messages = await _openClawClient.GetMessagesAsync(chatData.Jid, cancellationToken: cancellationToken);
-                
-                foreach (var msgData in messages)
+                var msgList = messages.ToList();
+                cacheMessages[chatData.Jid] = msgList;
+
+                foreach (var msgData in msgList)
                 {
                     await ProcessMessageAsync(db, chat, msgData, cancellationToken);
                     result.MessagesProcessed++;
@@ -78,6 +85,7 @@ public class BackupService : IBackupService
             }
 
             await db.SaveChangesAsync(cancellationToken);
+            await _cache.SaveAsync(chatList, cacheMessages);
 
             result.Success = true;
             _logger.LogInformation(
