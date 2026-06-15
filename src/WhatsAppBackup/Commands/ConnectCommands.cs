@@ -5,7 +5,7 @@ namespace WhatsAppBackup.Commands;
 
 public interface IConnectCommands
 {
-    Task<int> CheckConnectionAsync();
+    Task<int> CheckConnectionAsync(bool reset = false);
 }
 
 public class ConnectCommands : IConnectCommands
@@ -27,19 +27,23 @@ public class ConnectCommands : IConnectCommands
         _cache = cache;
     }
 
-    public async Task<int> CheckConnectionAsync()
+    public async Task<int> CheckConnectionAsync(bool reset = false)
     {
-        Console.WriteLine("Checking OpenClaw gateway connection...");
+        if (reset) ResetSession();
+
+        Console.WriteLine("Checking WhatsApp gateway...");
         Console.WriteLine();
 
-        using var initialTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var status = await _openClawClient.GetStatusAsync(initialTimeout.Token);
+        var status = await GetStatusAsync();
+
+        if (!status.IsGatewayReachable)
+            status = await TryStartGatewayAsync() ?? status;
 
         if (!status.IsGatewayReachable)
         {
             Console.WriteLine($"❌ Gateway is not reachable: {status.Error}");
             Console.WriteLine();
-            Console.WriteLine("Ensure the OpenClaw gateway is running and GatewayUrl in");
+            Console.WriteLine("Ensure the gateway is running and GatewayUrl in");
             Console.WriteLine("appsettings.json points to the correct address.");
             await PrintCacheInfoAsync();
             return 1;
@@ -58,6 +62,60 @@ public class ConnectCommands : IConnectCommands
         return await WaitForQrScanAsync();
     }
 
+    // ── Gateway auto-start ────────────────────────────────────────────────────
+
+    private async Task<GatewayStatus?> TryStartGatewayAsync()
+    {
+        var gatewayDir = GatewayProcess.FindGatewayDirectory();
+        if (gatewayDir is null)
+        {
+            _logger.LogDebug("No bundled gateway found");
+            return null;
+        }
+
+        if (!GatewayProcess.IsNodeAvailable())
+        {
+            Console.WriteLine("ℹ️  Node.js is not installed — cannot auto-start the gateway.");
+            Console.WriteLine("   Install it from https://nodejs.org/ and run 'connect' again.");
+            return null;
+        }
+
+        if (!await GatewayProcess.EnsureDependenciesAsync(gatewayDir))
+        {
+            Console.WriteLine("❌ npm install failed. Check output above for errors.");
+            return null;
+        }
+
+        var sessionDir = Path.GetFullPath(Path.Combine(_cache.CacheDirectory, "wa-session"));
+        Console.WriteLine($"Starting bundled gateway  (session → {sessionDir})...");
+
+        var proc = GatewayProcess.Start(gatewayDir, sessionDir);
+        if (proc is null)
+        {
+            Console.WriteLine("❌ Failed to launch gateway process.");
+            return null;
+        }
+
+        Console.Write("Waiting for gateway to start");
+        for (int i = 0; i < 20; i++)
+        {
+            await Task.Delay(1000);
+            Console.Write(".");
+            var s = await GetStatusAsync(timeoutSeconds: 2);
+            if (s.IsGatewayReachable)
+            {
+                Console.WriteLine(" ready!");
+                return s;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("❌ Gateway did not respond within 20 s.");
+        return null;
+    }
+
+    // ── QR polling loop ───────────────────────────────────────────────────────
+
     private async Task<int> WaitForQrScanAsync()
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(QrTimeoutSeconds));
@@ -70,46 +128,105 @@ public class ConnectCommands : IConnectCommands
 
         while (!cts.IsCancellationRequested)
         {
-            GatewayStatus status;
-            try
-            {
-                using var pollTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                status = await _openClawClient.GetStatusAsync(pollTimeout.Token);
-            }
-            catch (Exception)
-            {
-                await DelayAsync(PollIntervalSeconds, cts.Token);
-                continue;
-            }
+            var status = await GetStatusAsync(timeoutSeconds: 5);
 
             if (status.IsWhatsAppConnected)
             {
-                Console.Clear();
+                ClearConsole();
                 Console.WriteLine("✅ WhatsApp connected successfully!");
                 PrintConnected(status);
+                Console.WriteLine();
+                await WaitForHistorySyncAsync();
                 return 0;
             }
 
             if (!string.IsNullOrEmpty(status.QrCode) && status.QrCode != lastQr)
             {
                 lastQr = status.QrCode;
-                Console.Clear();
                 var remaining = QrTimeoutSeconds - (int)(DateTime.UtcNow - startedAt).TotalSeconds;
-                Console.WriteLine($"Scan this QR code with WhatsApp  ({remaining}s remaining, Ctrl+C to cancel)");
+                ClearConsole();
+                Console.WriteLine($"Scan this QR code with WhatsApp  ({remaining}s remaining — Ctrl+C to cancel)");
                 Console.WriteLine();
                 RenderQrCode(status.QrCode);
             }
-            else if (string.IsNullOrEmpty(status.QrCode) && lastQr == null)
+            else if (string.IsNullOrEmpty(status.QrCode) && lastQr is null)
             {
                 Console.Write(".");
             }
 
-            await DelayAsync(PollIntervalSeconds, cts.Token);
+            try { await Task.Delay(TimeSpan.FromSeconds(PollIntervalSeconds), cts.Token); }
+            catch (OperationCanceledException) { break; }
         }
 
         Console.WriteLine();
-        Console.WriteLine("❌ Timed out waiting for QR scan. Run 'connect' again to retry.");
+        Console.WriteLine("❌ Timed out. Run 'connect' again to retry.");
         return 1;
+    }
+
+    // ── Session reset ─────────────────────────────────────────────────────────
+
+    private void ResetSession()
+    {
+        var sessionDir = Path.GetFullPath(Path.Combine(_cache.CacheDirectory, "wa-session"));
+        if (Directory.Exists(sessionDir))
+        {
+            Directory.Delete(sessionDir, recursive: true);
+            Console.WriteLine($"✅ Session cleared: {sessionDir}");
+        }
+        else
+        {
+            Console.WriteLine("No session found — will create a fresh one.");
+        }
+        Console.WriteLine();
+    }
+
+    // ── History sync wait ─────────────────────────────────────────────────────
+
+    private async Task WaitForHistorySyncAsync()
+    {
+        Console.WriteLine("Waiting for WhatsApp history sync...");
+        Console.WriteLine("(This may take several minutes for large accounts)");
+        Console.WriteLine();
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int lastChats = -1, lastMessages = -1;
+
+        while (stopwatch.Elapsed.TotalMinutes < 15)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            SyncStatus sync;
+            try { sync = await _openClawClient.GetSyncStatusAsync(cts.Token); }
+            catch { sync = new SyncStatus(); }
+
+            if (sync.ChatsCount != lastChats || sync.MessagesCount != lastMessages)
+            {
+                lastChats = sync.ChatsCount;
+                lastMessages = sync.MessagesCount;
+                Console.WriteLine($"   Syncing...  Chats: {sync.ChatsCount,5}   Messages: {sync.MessagesCount,7}   ({stopwatch.Elapsed:mm\\:ss} elapsed)");
+            }
+
+            if (sync.SyncComplete)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"✅ Sync complete — {sync.ChatsCount} chats, {sync.MessagesCount} messages");
+                Console.WriteLine("   Run 'backup' to store everything to PostgreSQL.");
+                return;
+            }
+
+            await Task.Delay(3000);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("⚠️  Sync is still in progress. Run 'backup' whenever you're ready.");
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private async Task<GatewayStatus> GetStatusAsync(int timeoutSeconds = 10)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        try { return await _openClawClient.GetStatusAsync(cts.Token); }
+        catch { return new GatewayStatus { IsGatewayReachable = false, Error = "Timeout" }; }
     }
 
     private static void PrintConnected(GatewayStatus status)
@@ -126,7 +243,7 @@ public class ConnectCommands : IConnectCommands
     {
         var info = await _cache.GetInfoAsync();
         Console.WriteLine();
-        if (info != null)
+        if (info is not null)
         {
             Console.WriteLine($"📁 Local cache: {Path.GetFullPath(_cache.CacheDirectory)}");
             Console.WriteLine($"   Last saved : {info.SavedAt:yyyy-MM-dd HH:mm} UTC");
@@ -140,25 +257,24 @@ public class ConnectCommands : IConnectCommands
         }
     }
 
+    private static void ClearConsole()
+    {
+        try { Console.Clear(); }
+        catch { Console.WriteLine(new string('-', 60)); }
+    }
+
     private static void RenderQrCode(string content)
     {
         try
         {
-            var qrGenerator = new QRCodeGenerator();
-            var qrData = qrGenerator.CreateQrCode(content, QRCodeGenerator.ECCLevel.M);
-            var ascii = new AsciiQRCode(qrData);
-            Console.WriteLine(ascii.GetGraphic(1, "██", "  "));
+            var gen = new QRCodeGenerator();
+            var data = gen.CreateQrCode(content, QRCodeGenerator.ECCLevel.M);
+            Console.WriteLine(new AsciiQRCode(data).GetGraphic(1, "██", "  "));
         }
         catch
         {
-            Console.WriteLine($"[QR render failed — raw data below]");
+            Console.WriteLine("[QR render failed — raw data:]");
             Console.WriteLine(content);
         }
-    }
-
-    private static async Task DelayAsync(int seconds, CancellationToken ct)
-    {
-        try { await Task.Delay(TimeSpan.FromSeconds(seconds), ct); }
-        catch (OperationCanceledException) { }
     }
 }

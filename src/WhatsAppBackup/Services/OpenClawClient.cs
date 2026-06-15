@@ -9,8 +9,17 @@ namespace WhatsAppBackup.Services;
 public interface IOpenClawClient
 {
     Task<GatewayStatus> GetStatusAsync(CancellationToken cancellationToken = default);
+    Task<SyncStatus> GetSyncStatusAsync(CancellationToken cancellationToken = default);
     Task<IEnumerable<ChatData>> GetChatsAsync(CancellationToken cancellationToken = default);
     Task<IEnumerable<MessageData>> GetMessagesAsync(string jid, DateTime? since = null, CancellationToken cancellationToken = default);
+}
+
+public class SyncStatus
+{
+    public bool Connected { get; set; }
+    public bool SyncComplete { get; set; }
+    public int ChatsCount { get; set; }
+    public int MessagesCount { get; set; }
 }
 
 public class GatewayStatus
@@ -126,6 +135,18 @@ public class OpenClawClient : IOpenClawClient
         }
 
         return status;
+    }
+
+    public async Task<SyncStatus> GetSyncStatusAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync("/api/whatsapp/sync-status", cancellationToken);
+            if (!response.IsSuccessStatusCode) return new SyncStatus();
+            return await response.Content.ReadFromJsonAsync<SyncStatus>(cancellationToken: cancellationToken)
+                ?? new SyncStatus();
+        }
+        catch { return new SyncStatus(); }
     }
 
     public async Task<IEnumerable<ChatData>> GetChatsAsync(CancellationToken cancellationToken = default)

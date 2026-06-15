@@ -1,0 +1,11 @@
+{
+  "name": "whatsapp-gateway",
+  "version": "1.0.0",
+  "description": "WhatsApp Web gateway for WhatsAppBackup",
+  "main": "index.js",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "express": "^4.19.0",
+    "pino": "^8.0.0"
+  }
+}

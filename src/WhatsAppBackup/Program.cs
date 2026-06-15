@@ -51,7 +51,8 @@ try
 
         return args[0].ToLowerInvariant() switch
         {
-            "connect" or "--connect" or "-c" => await connect.CheckConnectionAsync(),
+            "connect" or "--connect" or "-c" => await connect.CheckConnectionAsync(reset: false),
+            "connect:reset" or "--connect:reset" or "reset" => await connect.CheckConnectionAsync(reset: true),
             "backup" or "--backup" or "-b" => await commands.RunFullBackupAsync(),
             "incremental" or "--incremental" or "-i" => await commands.RunIncrementalBackupAsync(),
             "migrate" or "--migrate" =>
@@ -123,6 +124,7 @@ static int ShowHelp()
         Commands:
           (none)        Run as a scheduled service (daemon mode)
           connect       Check gateway and WhatsApp connection status
+          reset         Clear session and re-scan QR (fetches full history again)
           backup        Run a full backup now
           incremental   Run an incremental backup now
           migrate       Run database migrations only

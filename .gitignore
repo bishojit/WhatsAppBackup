@@ -35,3 +35,5 @@ logs/
 appsettings.Development.json
 appsettings.Local.json
 *.secrets.json
+/gateway/node_modules
+/src/WhatsAppBackup/cache/wa-session
