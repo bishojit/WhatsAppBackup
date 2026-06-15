@@ -151,9 +151,10 @@ public class ConnectCommands : IConnectCommands
                 Console.WriteLine();
                 RenderQrCode(status.QrCode);
             }
-            else if (string.IsNullOrEmpty(status.QrCode) && lastQr is null)
+            else if (string.IsNullOrEmpty(status.QrCode))
             {
-                Console.Write(".");
+                var gatewayState = status.State ?? "waiting";
+                Console.WriteLine($"   Gateway state: {gatewayState} — waiting for QR...");
             }
 
             try { await Task.Delay(TimeSpan.FromSeconds(PollIntervalSeconds), cts.Token); }

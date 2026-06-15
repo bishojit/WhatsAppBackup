@@ -1,5 +1,11 @@
 Session: D:\P_Bikiran\WhatsAppBackup\src\WhatsAppBackup\cache\wa-session
-Loaded 0 chats from disk
-Loaded 15 messages from disk
 WhatsApp Gateway on http://127.0.0.1:18789
+QR ready — scan with WhatsApp to link
+Connection closed — reconnecting in 3 s...
 Connected: BIKIRAN (+8801925363333)
+History batch: 408 chats, 3103 messages (isLatest=false)
+History batch: 558 chats, 6204 messages (isLatest=false)
+History batch: 785 chats, 9480 messages (isLatest=false)
+History batch: 827 chats, 10379 messages (isLatest=false)
+History batch: 950 chats, 13471 messages (isLatest=false)
+History batch: 1088 chats, 17520 messages (isLatest=false)

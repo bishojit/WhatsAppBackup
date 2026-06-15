@@ -67,6 +67,18 @@ function persistMessages() {
 
 // ── WhatsApp socket ───────────────────────────────────────────────────────────
 
+function clearAuthFiles() {
+  try {
+    const keep = new Set(['messages.json', 'chats.json'])
+    fs.readdirSync(SESSION_DIR)
+      .filter(f => !keep.has(f))
+      .forEach(f => { try { fs.unlinkSync(path.join(SESSION_DIR, f)) } catch { } })
+    console.log('Auth files cleared')
+  } catch (e) {
+    console.error('Failed to clear auth files:', e.message)
+  }
+}
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
   const { version } = await fetchLatestBaileysVersion()
@@ -93,14 +105,20 @@ async function startSocket() {
     if (connection === 'close') {
       qrCode = null
       connectedUser = { phone: null, name: null }
+      syncComplete = false
       const code = lastDisconnect?.error?.output?.statusCode
-      const reconnect = code !== DisconnectReason.loggedOut
-      connectionState = reconnect ? 'RECONNECTING' : 'LOGGED_OUT'
-      if (reconnect) {
+      const shouldReconnect = code !== DisconnectReason.loggedOut
+
+      if (shouldReconnect) {
+        connectionState = 'RECONNECTING'
         console.log('Connection closed — reconnecting in 3 s...')
         setTimeout(startSocket, 3000)
       } else {
-        console.log('Logged out. Delete the session folder to re-link.')
+        // Logged out by WhatsApp — clear auth files and restart to show a fresh QR
+        console.log('Logged out by WhatsApp — clearing auth state and restarting...')
+        connectionState = 'DISCONNECTED'
+        clearAuthFiles()
+        setTimeout(startSocket, 2000)
       }
     }
     if (connection === 'open') {
